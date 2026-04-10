@@ -1,4 +1,4 @@
-const MODEL = "claude-sonnet-4-20250514";
+const MODEL = "claude-haiku-4-5-20251001";
 
 const SYSTEM = `You are a project state extractor. Given a log entry and the current project state, return an updated current_state as plain markdown. 
 Be concise — this is a snapshot, not a document. Max 300 words.
