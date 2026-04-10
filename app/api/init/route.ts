@@ -65,6 +65,24 @@ export async function POST(req: NextRequest) {
       ON CONFLICT (id) DO NOTHING
     `;
 
+    await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS budget TEXT`;
+    await sql`
+      ALTER TABLE projects
+      ADD COLUMN IF NOT EXISTS status_v2 TEXT DEFAULT 'pending'
+    `;
+
+    await sql`
+      CREATE TABLE IF NOT EXISTS tasks (
+        id TEXT PRIMARY KEY,
+        project_id TEXT REFERENCES projects(id),
+        title TEXT NOT NULL,
+        status TEXT DEFAULT 'open',
+        reminders_id TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `;
+
     const seeds = [
       {
         id: "seed-dream-screens",

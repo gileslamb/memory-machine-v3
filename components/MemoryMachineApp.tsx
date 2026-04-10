@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type CSSProperties,
 } from "react";
@@ -27,6 +28,18 @@ type Project = {
   description: string | null;
   status: string;
   current_state: string | null;
+  budget: string | null;
+  status_v2: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type TaskRow = {
+  id: string;
+  project_id: string;
+  title: string;
+  status: string;
+  reminders_id: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -86,6 +99,511 @@ async function parseError(res: Response): Promise<string> {
   return res.statusText || "Request failed";
 }
 
+function firstTwoLines(text: string): string {
+  const lines = text.split("\n");
+  return lines.slice(0, 2).join("\n");
+}
+
+const STATUS_V2_META: Record<string, { label: string; color: string }> = {
+  pending: { label: "Pending", color: "#888888" },
+  "in-dev": { label: "In dev", color: "#3a7bd5" },
+  active: { label: "Active", color: "#2d6a4f" },
+  delivered: { label: "Delivered", color: "#0d9488" },
+  "on-hold": { label: "On hold", color: "#d97706" },
+};
+
+const STATUS_V2_ORDER = [
+  "pending",
+  "in-dev",
+  "active",
+  "delivered",
+  "on-hold",
+] as const;
+
+type ProjectCardProps = {
+  project: Project;
+  token: string;
+  minutesTotal: number;
+  onRefreshProjects: () => Promise<void>;
+  onArchive: () => void | Promise<void>;
+};
+
+function ProjectCard({
+  project,
+  token,
+  minutesTotal,
+  onRefreshProjects,
+  onArchive,
+}: ProjectCardProps) {
+  const effectiveStatus = project.status_v2 ?? "pending";
+  const meta = STATUS_V2_META[effectiveStatus] ?? STATUS_V2_META.pending;
+
+  const [tasks, setTasks] = useState<TaskRow[]>([]);
+  const [projLogs, setProjLogs] = useState<LogRow[]>([]);
+  const [tasksOpen, setTasksOpen] = useState(true);
+  const [logsOpen, setLogsOpen] = useState(false);
+  const [stateExpanded, setStateExpanded] = useState(false);
+  const [showDone, setShowDone] = useState(false);
+  const [statusMenuOpen, setStatusMenuOpen] = useState(false);
+  const [budgetEditing, setBudgetEditing] = useState(false);
+  const [budgetDraft, setBudgetDraft] = useState(project.budget ?? "");
+  const statusMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    setBudgetDraft(project.budget ?? "");
+  }, [project.budget]);
+
+  const loadProjectData = useCallback(async () => {
+    if (!token) return;
+    const [tr, lr] = await Promise.all([
+      fetch(
+        `/api/tasks?project_id=${encodeURIComponent(project.id)}`,
+        { headers: authHeaders(token) }
+      ),
+      fetch(
+        `/api/logs?project_id=${encodeURIComponent(project.id)}`,
+        { headers: authHeaders(token) }
+      ),
+    ]);
+    if (tr.ok) setTasks(await tr.json());
+    if (lr.ok) {
+      const all: LogRow[] = await lr.json();
+      setProjLogs(all.slice(0, 5));
+    }
+  }, [token, project.id]);
+
+  useEffect(() => {
+    void loadProjectData();
+  }, [loadProjectData, project.updated_at]);
+
+  useEffect(() => {
+    if (!statusMenuOpen) return;
+    function close(e: MouseEvent) {
+      if (
+        statusMenuRef.current &&
+        !statusMenuRef.current.contains(e.target as Node)
+      ) {
+        setStatusMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [statusMenuOpen]);
+
+  const openTasks = tasks.filter((t) => t.status === "open");
+  const doneTasks = tasks.filter((t) => t.status === "done");
+
+  async function patchStatusV2(v: string) {
+    setStatusMenuOpen(false);
+    const res = await fetch(`/api/projects/${project.id}`, {
+      method: "PATCH",
+      headers: { ...authHeaders(token), "content-type": "application/json" },
+      body: JSON.stringify({ status_v2: v }),
+    });
+    if (!res.ok) {
+      alert(await parseError(res));
+      return;
+    }
+    await onRefreshProjects();
+  }
+
+  async function saveBudget() {
+    setBudgetEditing(false);
+    const next = budgetDraft.trim();
+    const payload = next === "" ? { budget: null } : { budget: next };
+    const res = await fetch(`/api/projects/${project.id}`, {
+      method: "PATCH",
+      headers: { ...authHeaders(token), "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      alert(await parseError(res));
+      setBudgetDraft(project.budget ?? "");
+      return;
+    }
+    await onRefreshProjects();
+  }
+
+  async function completeTask(taskId: string) {
+    const prev = tasks;
+    setTasks((t) =>
+      t.map((x) => (x.id === taskId ? { ...x, status: "done" } : x))
+    );
+    const res = await fetch(`/api/tasks/${taskId}`, {
+      method: "PATCH",
+      headers: { ...authHeaders(token), "content-type": "application/json" },
+      body: JSON.stringify({ status: "done" }),
+    });
+    if (!res.ok) {
+      setTasks(prev);
+      alert(await parseError(res));
+    }
+  }
+
+  const hoursStr =
+    minutesTotal <= 0 ? "0h logged" : `${(minutesTotal / 60).toFixed(1)}h logged`;
+  const stateText = project.current_state?.trim() ?? "";
+
+  return (
+    <div style={{ ...card, fontSize: 16, lineHeight: 1.7 }}>
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          gap: 12,
+          marginBottom: 16,
+        }}
+      >
+        <div style={{ fontWeight: 700, fontSize: 18, flex: "1 1 200px" }}>
+          {project.name}
+        </div>
+        <div ref={statusMenuRef} style={{ position: "relative" }}>
+          <button
+            type="button"
+            onClick={() => setStatusMenuOpen((o) => !o)}
+            style={{
+              minHeight: 44,
+              padding: "8px 14px",
+              borderRadius: 999,
+              border: "none",
+              background: meta.color,
+              color: "#fff",
+              fontWeight: 600,
+              fontSize: 14,
+              cursor: "pointer",
+            }}
+          >
+            {meta.label}
+          </button>
+          {statusMenuOpen ? (
+            <div
+              style={{
+                position: "absolute",
+                right: 0,
+                top: "calc(100% + 6px)",
+                zIndex: 30,
+                background: "#fff",
+                border: `1px solid ${BORDER}`,
+                borderRadius: 8,
+                boxShadow: "0 8px 24px rgba(0,0,0,0.08)",
+                minWidth: 160,
+                padding: 6,
+              }}
+            >
+              {STATUS_V2_ORDER.map((v) => {
+                const m = STATUS_V2_META[v];
+                return (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => void patchStatusV2(v)}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      textAlign: "left",
+                      minHeight: 44,
+                      padding: "10px 12px",
+                      border: "none",
+                      background:
+                        v === effectiveStatus ? "#f0f0ec" : "transparent",
+                      borderRadius: 6,
+                      cursor: "pointer",
+                      fontSize: 15,
+                    }}
+                  >
+                    <span
+                      style={{
+                        display: "inline-block",
+                        width: 10,
+                        height: 10,
+                        borderRadius: 999,
+                        background: m.color,
+                        marginRight: 8,
+                        verticalAlign: "middle",
+                      }}
+                    />
+                    {m.label}
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ marginBottom: 10 }}>
+          <span style={{ fontWeight: 600, marginRight: 8 }}>Budget:</span>
+          {budgetEditing ? (
+            <input
+              value={budgetDraft}
+              onChange={(e) => setBudgetDraft(e.target.value)}
+              onBlur={() => void saveBudget()}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+              }}
+              autoFocus
+              aria-label="Budget"
+              style={{
+                minHeight: 44,
+                padding: "8px 10px",
+                border: `1px solid ${BORDER}`,
+                borderRadius: 8,
+                width: "100%",
+                maxWidth: 360,
+                fontSize: 16,
+              }}
+            />
+          ) : (
+            <button
+              type="button"
+              onClick={() => setBudgetEditing(true)}
+              style={{
+                minHeight: 44,
+                padding: "6px 0",
+                border: "none",
+                background: "transparent",
+                color: project.budget ? TEXT : MUTED,
+                fontSize: 16,
+                textAlign: "left",
+                cursor: "pointer",
+                fontStyle: project.budget ? "normal" : "italic",
+              }}
+            >
+              {project.budget?.trim() ? project.budget : "No budget set"}
+            </button>
+          )}
+        </div>
+        <div style={{ color: MUTED }}>{hoursStr}</div>
+      </div>
+
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>Current state</div>
+        {stateText ? (
+          <>
+            <div
+              style={{
+                whiteSpace: "pre-wrap",
+                ...(stateExpanded
+                  ? {}
+                  : {
+                      display: "-webkit-box",
+                      WebkitLineClamp: 3,
+                      WebkitBoxOrient: "vertical" as const,
+                      overflow: "hidden",
+                    }),
+              }}
+            >
+              {stateText}
+            </div>
+            <button
+              type="button"
+              onClick={() => setStateExpanded((e) => !e)}
+              style={{
+                marginTop: 8,
+                minHeight: 44,
+                padding: "8px 0",
+                border: "none",
+                background: "transparent",
+                color: ACCENT,
+                fontWeight: 600,
+                cursor: "pointer",
+                fontSize: 15,
+              }}
+            >
+              {stateExpanded ? "Show less" : "Show more"}
+            </button>
+          </>
+        ) : (
+          <p style={{ margin: 0, color: MUTED, fontStyle: "italic" }}>
+            No state yet
+          </p>
+        )}
+      </div>
+
+      <div style={{ marginBottom: 16 }}>
+        <button
+          type="button"
+          onClick={() => setTasksOpen((o) => !o)}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            width: "100%",
+            minHeight: 48,
+            padding: "10px 0",
+            border: "none",
+            borderBottom: `1px solid ${BORDER}`,
+            background: "transparent",
+            fontWeight: 700,
+            fontSize: 16,
+            cursor: "pointer",
+            textAlign: "left",
+          }}
+        >
+          <span>Tasks ({openTasks.length} open)</span>
+          <span style={{ color: MUTED }}>{tasksOpen ? "−" : "+"}</span>
+        </button>
+        {tasksOpen ? (
+          <div style={{ paddingTop: 12 }}>
+            {openTasks.length === 0 ? (
+              <p style={{ margin: "0 0 8px", color: MUTED }}>No open tasks.</p>
+            ) : (
+              <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
+                {openTasks.map((t) => (
+                  <li key={t.id} style={{ marginBottom: 10 }}>
+                    <label
+                      style={{
+                        display: "flex",
+                        alignItems: "flex-start",
+                        gap: 12,
+                        cursor: "pointer",
+                        minHeight: 44,
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={false}
+                        onChange={() => void completeTask(t.id)}
+                        style={{
+                          width: 22,
+                          height: 22,
+                          marginTop: 4,
+                          flexShrink: 0,
+                        }}
+                        aria-label={`Mark done: ${t.title}`}
+                      />
+                      <span style={{ paddingTop: 2 }}>{t.title}</span>
+                    </label>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {doneTasks.length > 0 ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setShowDone((s) => !s)}
+                  style={{
+                    minHeight: 44,
+                    marginTop: 8,
+                    padding: "8px 0",
+                    border: "none",
+                    background: "transparent",
+                    color: ACCENT,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    fontSize: 15,
+                  }}
+                >
+                  {showDone ? "Hide done" : `Show ${doneTasks.length} done`}
+                </button>
+                {showDone ? (
+                  <ul
+                    style={{
+                      listStyle: "none",
+                      margin: "8px 0 0",
+                      padding: 0,
+                      opacity: 0.65,
+                    }}
+                  >
+                    {doneTasks.map((t) => (
+                      <li
+                        key={t.id}
+                        style={{
+                          marginBottom: 8,
+                          textDecoration: "line-through",
+                          paddingLeft: 34,
+                        }}
+                      >
+                        {t.title}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+
+      <div style={{ marginBottom: 20 }}>
+        <button
+          type="button"
+          onClick={() => setLogsOpen((o) => !o)}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            width: "100%",
+            minHeight: 48,
+            padding: "10px 0",
+            border: "none",
+            borderBottom: `1px solid ${BORDER}`,
+            background: "transparent",
+            fontWeight: 700,
+            fontSize: 16,
+            cursor: "pointer",
+            textAlign: "left",
+          }}
+        >
+          <span>Recent logs</span>
+          <span style={{ color: MUTED }}>{logsOpen ? "−" : "+"}</span>
+        </button>
+        {logsOpen ? (
+          <div style={{ paddingTop: 12 }}>
+            {projLogs.length === 0 ? (
+              <p style={{ margin: 0, color: MUTED }}>No logs yet</p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                {projLogs.map((log) => (
+                  <div key={log.id}>
+                    <div
+                      style={{
+                        fontSize: 13,
+                        color: MUTED,
+                        marginBottom: 4,
+                      }}
+                    >
+                      {new Date(log.created_at).toLocaleString()}
+                    </div>
+                    <div
+                      style={{
+                        whiteSpace: "pre-wrap",
+                        fontSize: 15,
+                      }}
+                    >
+                      {firstTwoLines(log.content)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : null}
+      </div>
+
+      <button
+        type="button"
+        onClick={() => void onArchive()}
+        style={{
+          minHeight: 48,
+          padding: "12px 18px",
+          border: `1px solid ${BORDER}`,
+          borderRadius: 8,
+          background: "#fff",
+          fontSize: 16,
+          cursor: "pointer",
+        }}
+      >
+        Archive project
+      </button>
+    </div>
+  );
+}
+
 export default function MemoryMachineApp() {
   const [token, setToken] = useState<string | null>(null);
   const [gatePassword, setGatePassword] = useState("");
@@ -107,7 +625,6 @@ export default function MemoryMachineApp() {
 
   const [newProjectName, setNewProjectName] = useState("");
   const [newProjectDesc, setNewProjectDesc] = useState("");
-  const [expandedProjectId, setExpandedProjectId] = useState<string | null>(null);
 
   const [tsProject, setTsProject] = useState("");
   const [tsDuration, setTsDuration] = useState("");
@@ -171,6 +688,12 @@ export default function MemoryMachineApp() {
     refreshArchives();
     refreshStable();
   }, [token, refreshProjects, refreshLogs, refreshTimesheet, refreshArchives, refreshStable]);
+
+  useEffect(() => {
+    if (tab === "projects" && token) {
+      void refreshTimesheet();
+    }
+  }, [tab, token, refreshTimesheet]);
 
   async function submitGate(e: React.FormEvent) {
     e.preventDefault();
@@ -346,6 +869,14 @@ export default function MemoryMachineApp() {
     for (const row of timesheet) {
       if (!m.has(row.project_id)) m.set(row.project_id, []);
       m.get(row.project_id)!.push(row);
+    }
+    return m;
+  }, [timesheet]);
+
+  const minutesByProject = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const row of timesheet) {
+      m.set(row.project_id, (m.get(row.project_id) ?? 0) + row.duration_minutes);
     }
     return m;
   }, [timesheet]);
@@ -794,7 +1325,7 @@ export default function MemoryMachineApp() {
         )}
 
         {tab === "projects" && (
-          <section>
+          <section style={{ fontSize: 16, lineHeight: 1.7, color: TEXT }}>
             <form onSubmit={createProject} style={{ ...card, marginBottom: 24 }}>
               <h2 style={{ margin: "0 0 12px", fontSize: "1.2rem" }}>Add project</h2>
               <input
@@ -808,6 +1339,7 @@ export default function MemoryMachineApp() {
                   borderRadius: 8,
                   marginBottom: 10,
                   minHeight: 48,
+                  fontSize: 16,
                 }}
               />
               <textarea
@@ -821,6 +1353,7 @@ export default function MemoryMachineApp() {
                   border: `1px solid ${BORDER}`,
                   borderRadius: 8,
                   marginBottom: 12,
+                  fontSize: 16,
                 }}
               />
               <button
@@ -833,91 +1366,25 @@ export default function MemoryMachineApp() {
                   border: "none",
                   borderRadius: 8,
                   fontWeight: 600,
+                  fontSize: 16,
                 }}
               >
                 Create project
               </button>
             </form>
 
-            <h2 style={{ fontSize: "1.15rem", margin: "0 0 12px" }}>Active projects</h2>
-            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              {activeProjects.map((p) => {
-                const expanded = expandedProjectId === p.id;
-                const totalMin = timesheet
-                  .filter((t) => t.project_id === p.id)
-                  .reduce((s, t) => s + t.duration_minutes, 0);
-                const hours = (totalMin / 60).toFixed(1);
-                const descShort =
-                  p.description && p.description.length > 140
-                    ? `${p.description.slice(0, 140)}…`
-                    : p.description;
-                const stateShort =
-                  p.current_state && p.current_state.length > 160
-                    ? `${p.current_state.slice(0, 160)}…`
-                    : p.current_state;
-                return (
-                  <div key={p.id} style={card}>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setExpandedProjectId(expanded ? null : p.id)
-                      }
-                      style={{
-                        width: "100%",
-                        textAlign: "left",
-                        border: "none",
-                        background: "transparent",
-                        padding: 0,
-                        cursor: "pointer",
-                      }}
-                    >
-                      <div style={{ fontWeight: 700, fontSize: "1.05rem", marginBottom: 6 }}>
-                        {p.name}
-                      </div>
-                      <div style={{ color: MUTED, marginBottom: 8 }}>{descShort || "—"}</div>
-                      <div style={{ marginBottom: 8 }}>
-                        <span style={{ fontWeight: 600 }}>Current state: </span>
-                        <span style={{ whiteSpace: "pre-wrap" }}>
-                          {stateShort || "No state yet."}
-                        </span>
-                      </div>
-                      <div style={{ color: MUTED, fontSize: "0.9rem" }}>
-                        Updated {new Date(p.updated_at).toLocaleString()}
-                      </div>
-                    </button>
-                    {expanded ? (
-                      <div style={{ marginTop: 16, paddingTop: 16, borderTop: `1px solid ${BORDER}` }}>
-                        <h3 style={{ margin: "0 0 8px", fontSize: "1rem" }}>Description</h3>
-                        <p style={{ margin: "0 0 16px", whiteSpace: "pre-wrap" }}>
-                          {p.description || "—"}
-                        </p>
-                        <h3 style={{ margin: "0 0 8px", fontSize: "1rem" }}>Full current state</h3>
-                        <div style={{ whiteSpace: "pre-wrap", marginBottom: 16 }}>
-                          {p.current_state || "No state yet."}
-                        </div>
-                        <p style={{ margin: 0, fontWeight: 600 }}>
-                          Timesheet (all time): {hours} h ({totalMin} min)
-                        </p>
-                      </div>
-                    ) : null}
-                    <div style={{ marginTop: 12 }}>
-                      <button
-                        type="button"
-                        onClick={() => archiveProject(p.id)}
-                        style={{
-                          minHeight: 44,
-                          padding: "10px 16px",
-                          border: `1px solid ${BORDER}`,
-                          borderRadius: 8,
-                          background: "#fff",
-                        }}
-                      >
-                        Archive project
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
+            <h2 style={{ fontSize: "1.15rem", margin: "0 0 16px" }}>Active projects</h2>
+            <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+              {activeProjects.map((p) => (
+                <ProjectCard
+                  key={p.id}
+                  project={p}
+                  token={token!}
+                  minutesTotal={minutesByProject.get(p.id) ?? 0}
+                  onRefreshProjects={refreshProjects}
+                  onArchive={() => archiveProject(p.id)}
+                />
+              ))}
             </div>
             {activeProjects.length === 0 ? (
               <p style={{ color: MUTED }}>No active projects. Run database init or add one.</p>

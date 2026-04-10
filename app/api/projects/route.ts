@@ -10,7 +10,7 @@ export async function GET(req: NextRequest) {
   try {
     const sql = getSql();
     const rows = await sql`
-      SELECT id, name, description, status, current_state, created_at, updated_at
+      SELECT id, name, description, status, current_state, budget, status_v2, created_at, updated_at
       FROM projects
       ORDER BY updated_at DESC
     `;
@@ -37,7 +37,7 @@ export async function POST(req: NextRequest) {
     const [row] = await sql`
       INSERT INTO projects (id, name, description, status)
       VALUES (${id}, ${name}, ${description}, 'active')
-      RETURNING id, name, description, status, current_state, created_at, updated_at
+      RETURNING id, name, description, status, current_state, budget, status_v2, created_at, updated_at
     `;
     return Response.json(row);
   } catch (e) {

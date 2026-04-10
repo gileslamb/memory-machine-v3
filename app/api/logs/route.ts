@@ -64,16 +64,55 @@ export async function POST(req: NextRequest) {
     if (project_id && projectRow) {
       const p = projectRow;
       try {
-        const updatedState = await extractProjectState({
+        const extracted = await extractProjectState({
           projectName: p.name,
           currentState: p.current_state,
           logContent: content,
         });
-        await sql`
-          UPDATE projects
-          SET current_state = ${updatedState}, updated_at = NOW()
-          WHERE id = ${project_id}
-        `;
+        try {
+          await sql`
+            UPDATE projects
+            SET current_state = ${extracted.state}, updated_at = NOW()
+            WHERE id = ${project_id}
+          `;
+        } catch {
+          /* silent */
+        }
+        try {
+          if (extracted.status != null) {
+            await sql`
+              UPDATE projects
+              SET status_v2 = ${extracted.status}, updated_at = NOW()
+              WHERE id = ${project_id}
+            `;
+          }
+        } catch {
+          /* silent */
+        }
+        try {
+          if (extracted.budget != null && extracted.budget !== "") {
+            await sql`
+              UPDATE projects
+              SET budget = ${extracted.budget}, updated_at = NOW()
+              WHERE id = ${project_id}
+            `;
+          }
+        } catch {
+          /* silent */
+        }
+        for (const taskTitle of extracted.tasks) {
+          const t = taskTitle.trim();
+          if (!t) continue;
+          try {
+            const tid = newId();
+            await sql`
+              INSERT INTO tasks (id, project_id, title, status)
+              VALUES (${tid}, ${project_id}, ${t}, 'open')
+            `;
+          } catch {
+            /* silent */
+          }
+        }
       } catch (err) {
         const claude_error = err instanceof Error ? err.message : "Claude failed";
         return Response.json({ ...log, claude_error });
