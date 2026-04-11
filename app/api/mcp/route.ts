@@ -165,8 +165,9 @@ export async function GET() {
 /**
  * Stateless HTTP MCP: single POST, JSON-RPC in → JSON-RPC out (no SSE, no sessions).
  *
- * Auth (via isAuthorized): Authorization: Bearer (password or MEMORY_MACHINE_API_KEY),
- * x-memory-machine-api-key, or x-api-key (same key rules as other API routes).
+ * Auth (via isAuthorized): Authorization: Bearer matches MEMORY_MACHINE_PASSWORD or
+ * MEMORY_MACHINE_API_KEY (OAuth access_token from /api/oauth/token is the API key),
+ * or x-memory-machine-api-key / x-api-key headers.
  */
 export async function POST(req: NextRequest) {
   if (!isAuthorized(req)) {
