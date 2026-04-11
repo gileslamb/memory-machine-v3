@@ -151,10 +151,7 @@ async function runTool(
   }
 }
 
-export async function GET(req: NextRequest) {
-  if (!isAuthorized(req)) {
-    return unauthorizedResponse();
-  }
+export async function GET() {
   return Response.json({
     jsonrpc: "2.0",
     result: {
