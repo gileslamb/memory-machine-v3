@@ -151,6 +151,20 @@ async function runTool(
   }
 }
 
+export async function GET(req: NextRequest) {
+  if (!isAuthorized(req)) {
+    return unauthorizedResponse();
+  }
+  return Response.json({
+    jsonrpc: "2.0",
+    result: {
+      protocolVersion: "2024-11-05",
+      capabilities: { tools: {} },
+      serverInfo: { name: "memory-machine", version: "3.0.0" },
+    },
+  });
+}
+
 /**
  * Stateless HTTP MCP: single POST, JSON-RPC in → JSON-RPC out (no SSE, no sessions).
  *
