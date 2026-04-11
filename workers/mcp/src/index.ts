@@ -1,68 +1,58 @@
-/**
- * Transparent HTTP proxy to Memory Machine's stateless MCP endpoint (`/api/mcp`).
- * Forwards GET / POST / OPTIONS and relevant headers so Anthropic / Claude.ai can use
- * a Cloudflare edge URL while tools run on the Vercel app.
- *
- * Optional: set secret MEMORY_MACHINE_API_KEY to inject `Authorization: Bearer …`
- * when the client does not send credentials (single-tenant deployments).
- */
+import { McpAgent } from "agents/mcp";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
 
-export interface Env {
-  UPSTREAM_BASE?: string;
-  /** Optional; if set and the incoming request has no Authorization header, it is added. */
-  MEMORY_MACHINE_API_KEY?: string;
+interface Env {
+  MEMORY_MACHINE_API_KEY: string;
 }
 
-const CORS: Record<string, string> = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers":
-    "Content-Type, Authorization, x-api-key, x-memory-machine-api-key",
-};
+const BASE = "https://memory-machine-v3.vercel.app";
 
-function withCors(res: Response): Response {
-  const h = new Headers(res.headers);
-  for (const [k, v] of Object.entries(CORS)) {
-    h.set(k, v);
+export class MemoryMachineMCP extends McpAgent<Env> {
+  server = new McpServer({ name: "memory-machine", version: "3.0.0" });
+
+  async init() {
+    const key = this.env.MEMORY_MACHINE_API_KEY;
+    const h = { "Content-Type": "application/json", "x-api-key": key };
+
+    this.server.tool("list_projects", "Returns all active projects", {}, async () => {
+      const res = await fetch(`${BASE}/api/projects`, { headers: h });
+      return { content: [{ type: "text" as const, text: await res.text() }] };
+    });
+
+    this.server.tool("get_export", "Returns full markdown export", {}, async () => {
+      const res = await fetch(`${BASE}/api/export`, { headers: h });
+      return { content: [{ type: "text" as const, text: await res.text() }] };
+    });
+
+    this.server.tool(
+      "create_log",
+      "Creates a log entry",
+      { content: z.string(), project_id: z.string().optional() },
+      async ({ content, project_id }) => {
+        const res = await fetch(`${BASE}/api/logs`, {
+          method: "POST", headers: h,
+          body: JSON.stringify({ content, project_id }),
+        });
+        return { content: [{ type: "text" as const, text: await res.text() }] };
+      }
+    );
+
+    this.server.tool(
+      "update_project_state",
+      "Updates current_state for a project",
+      { id: z.string(), current_state: z.string() },
+      async ({ id, current_state }) => {
+        const res = await fetch(`${BASE}/api/projects/${id}`, {
+          method: "PATCH", headers: h,
+          body: JSON.stringify({ current_state }),
+        });
+        return { content: [{ type: "text" as const, text: await res.text() }] };
+      }
+    );
   }
-  return new Response(res.body, { status: res.status, statusText: res.statusText, headers: h });
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    if (request.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: CORS });
-    }
-
-    const base =
-      (env.UPSTREAM_BASE?.replace(/\/+$/, "") || "https://memory-machine-v3.vercel.app") +
-      "/api/mcp";
-
-    const src = new URL(request.url);
-    const dest = new URL(base);
-    dest.search = src.search;
-
-    const headers = new Headers(request.headers);
-    if (
-      env.MEMORY_MACHINE_API_KEY &&
-      !headers.get("Authorization") &&
-      !headers.get("x-memory-machine-api-key") &&
-      !headers.get("x-api-key")
-    ) {
-      headers.set("Authorization", `Bearer ${env.MEMORY_MACHINE_API_KEY}`);
-    }
-
-    const init: RequestInit = {
-      method: request.method,
-      headers,
-      redirect: "manual",
-    };
-
-    if (request.method !== "GET" && request.method !== "HEAD") {
-      init.body = request.body;
-    }
-
-    const upstream = await fetch(dest.toString(), init);
-    return withCors(upstream);
-  },
-};
+  fetch: MemoryMachineMCP.mount("/mcp"),
+} as ExportedHandler<Env>;

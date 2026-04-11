@@ -2,9 +2,5 @@
   "name": "memory-machine-mcp",
   "main": "src/index.ts",
   "compatibility_date": "2025-03-26",
-  "compatibility_flags": ["nodejs_compat"],
-  // Default upstream for Memory Machine (override via dashboard or wrangler secret)
-  "vars": {
-    "UPSTREAM_BASE": "https://memory-machine-v3.vercel.app"
-  }
+  "compatibility_flags": ["nodejs_compat"]
 }
