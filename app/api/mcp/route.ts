@@ -182,7 +182,8 @@ export async function GET(req: NextRequest) {
 /**
  * Stateless HTTP MCP: single POST, JSON-RPC in → JSON-RPC out (no SSE, no sessions).
  *
- * `initialize` and `ping` work without credentials (handshake). All other methods require
+ * `initialize`, `ping`, and `tools/list` work without credentials (handshake / discovery).
+ * All other methods require
  * isAuthorized(): Bearer (password or API key), x-memory-machine-api-key, or x-api-key.
  */
 export async function POST(req: NextRequest) {
@@ -195,7 +196,8 @@ export async function POST(req: NextRequest) {
 
   const { id, method, params } = body;
 
-  const allowUnauthenticated = method === "initialize" || method === "ping";
+  const allowUnauthenticated =
+    method === "initialize" || method === "ping" || method === "tools/list";
   if (!allowUnauthenticated && !isAuthorized(req)) {
     return mcpUnauthorizedResponse();
   }
