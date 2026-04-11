@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { isAuthorized, unauthorizedResponse } from "@/lib/auth";
+import { isAuthorized } from "@/lib/auth";
 import { getSql } from "@/lib/db";
 import { buildExportMarkdown } from "@/lib/exportMarkdown";
 import { insertLogEntry } from "@/lib/logMutations";
@@ -36,6 +36,20 @@ function toolText(text: string, isError = false) {
     content: [{ type: "text" as const, text }],
     isError,
   };
+}
+
+function mcpUnauthorizedResponse(): Response {
+  return new Response(JSON.stringify({ error: "Unauthorized" }), {
+    status: 401,
+    headers: {
+      "Content-Type": "application/json",
+      "WWW-Authenticate":
+        `Bearer realm="Memory Machine", ` +
+        `error="invalid_token", ` +
+        `error_description="Authentication required"`,
+      Link: `<https://memory-machine-v3.vercel.app/.well-known/oauth-authorization-server>; rel="oauth-server"`,
+    },
+  });
 }
 
 const TOOLS = [
@@ -151,7 +165,10 @@ async function runTool(
   }
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  if (!isAuthorized(req)) {
+    return mcpUnauthorizedResponse();
+  }
   return Response.json({
     jsonrpc: "2.0",
     result: {
@@ -171,7 +188,7 @@ export async function GET() {
  */
 export async function POST(req: NextRequest) {
   if (!isAuthorized(req)) {
-    return unauthorizedResponse();
+    return mcpUnauthorizedResponse();
   }
 
   let body: JsonRpcReq;
