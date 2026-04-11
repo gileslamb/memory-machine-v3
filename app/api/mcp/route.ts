@@ -11,6 +11,25 @@ type JsonRpcReq = {
   params?: Record<string, unknown>;
 };
 
+function corsHeaders() {
+  return {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers":
+      "Content-Type, Authorization, x-api-key, x-memory-machine-api-key",
+  };
+}
+
+function jsonResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+      ...corsHeaders(),
+    },
+  });
+}
+
 function rpcResponse(id: string | number | null | undefined, result: unknown) {
   return {
     jsonrpc: "2.0",
@@ -43,6 +62,7 @@ function mcpUnauthorizedResponse(): Response {
     status: 401,
     headers: {
       "Content-Type": "application/json",
+      ...corsHeaders(),
       "WWW-Authenticate":
         `Bearer realm="Memory Machine", ` +
         `error="invalid_token", ` +
@@ -165,8 +185,12 @@ async function runTool(
   }
 }
 
+export async function OPTIONS() {
+  return new Response(null, { status: 204, headers: corsHeaders() });
+}
+
 export async function GET() {
-  return Response.json({
+  return jsonResponse({
     jsonrpc: "2.0",
     result: {
       protocolVersion: "2024-11-05",
@@ -188,7 +212,7 @@ export async function POST(req: NextRequest) {
   try {
     body = (await req.json()) as JsonRpcReq;
   } catch {
-    return Response.json({ error: "Invalid JSON" }, { status: 400 });
+    return jsonResponse({ error: "Invalid JSON" }, 400);
   }
 
   const { id, method, params } = body;
@@ -200,11 +224,11 @@ export async function POST(req: NextRequest) {
   }
 
   if (method?.startsWith("notifications/")) {
-    return new Response(null, { status: 200 });
+    return new Response(null, { status: 200, headers: corsHeaders() });
   }
 
   if (method === "initialize") {
-    return Response.json(
+    return jsonResponse(
       rpcResponse(id, {
         protocolVersion: "2024-11-05",
         capabilities: { tools: {} },
@@ -214,7 +238,7 @@ export async function POST(req: NextRequest) {
   }
 
   if (method === "tools/list") {
-    return Response.json(rpcResponse(id, { tools: TOOLS }));
+    return jsonResponse(rpcResponse(id, { tools: TOOLS }));
   }
 
   if (method === "tools/call") {
@@ -223,18 +247,18 @@ export async function POST(req: NextRequest) {
     const toolArgs = p?.arguments ?? {};
     try {
       const result = await runTool(toolName, toolArgs);
-      return Response.json(rpcResponse(id, result));
+      return jsonResponse(rpcResponse(id, result));
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Tool failed";
-      return Response.json(rpcResponse(id, toolText(msg, true)));
+      return jsonResponse(rpcResponse(id, toolText(msg, true)));
     }
   }
 
   if (method === "ping") {
-    return Response.json(rpcResponse(id, {}));
+    return jsonResponse(rpcResponse(id, {}));
   }
 
-  return Response.json(
+  return jsonResponse(
     rpcError(id ?? null, -32601, method ? `Method not found: ${method}` : "Missing method")
   );
 }
