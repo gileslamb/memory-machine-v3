@@ -9,6 +9,10 @@ export function getAuthToken(req: NextRequest | Request): string | null {
   if (headerKey) {
     return headerKey.trim();
   }
+  const xApiKey = req.headers.get("x-api-key");
+  if (xApiKey) {
+    return xApiKey.trim();
+  }
   return null;
 }
 

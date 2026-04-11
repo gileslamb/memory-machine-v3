@@ -153,6 +153,9 @@ async function runTool(
 
 /**
  * Stateless HTTP MCP: single POST, JSON-RPC in → JSON-RPC out (no SSE, no sessions).
+ *
+ * Auth (via isAuthorized): Authorization: Bearer (password or MEMORY_MACHINE_API_KEY),
+ * x-memory-machine-api-key, or x-api-key (same key rules as other API routes).
  */
 export async function POST(req: NextRequest) {
   if (!isAuthorized(req)) {
