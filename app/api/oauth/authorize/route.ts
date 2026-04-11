@@ -5,7 +5,7 @@ declare global {
   var __mmOAuthCodes:
     | Map<
         string,
-        { challenge: string; method: string; expiry: number }
+        { expiry: number; challenge?: string; method?: string }
       >
     | undefined;
 }
@@ -90,21 +90,8 @@ function getOAuthParams(sp: URLSearchParams) {
 
 export async function GET(req: NextRequest) {
   const p = getOAuthParams(req.nextUrl.searchParams);
-  if (
-    !p.client_id ||
-    !p.redirect_uri ||
-    !p.response_type ||
-    !p.state ||
-    !p.code_challenge ||
-    !p.code_challenge_method
-  ) {
-    return new Response("Missing OAuth parameters.", { status: 400 });
-  }
-  if (p.response_type !== "code") {
-    return new Response("Unsupported response_type.", { status: 400 });
-  }
-  if (p.code_challenge_method !== "S256") {
-    return new Response("Unsupported code_challenge_method.", { status: 400 });
+  if (!p.redirect_uri) {
+    return new Response("Missing redirect_uri.", { status: 400 });
   }
   try {
     const u = new URL(p.redirect_uri);
@@ -138,15 +125,8 @@ export async function POST(req: NextRequest) {
   };
   const password = String(form.get("password") ?? "");
 
-  if (
-    !p.client_id ||
-    !p.redirect_uri ||
-    !p.response_type ||
-    !p.state ||
-    !p.code_challenge ||
-    !p.code_challenge_method
-  ) {
-    return new Response("Missing OAuth parameters.", { status: 400 });
+  if (!p.redirect_uri) {
+    return new Response("Missing redirect_uri.", { status: 400 });
   }
 
   const expected = process.env.MEMORY_MACHINE_PASSWORD ?? "";
@@ -163,15 +143,14 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  if (p.response_type !== "code" || p.code_challenge_method !== "S256") {
-    return new Response(renderPage({ ...p, error: "Invalid OAuth request." }), {
-      headers: { "content-type": "text/html; charset=utf-8" },
-    });
-  }
-
   let redirectUrl: URL;
   try {
     redirectUrl = new URL(p.redirect_uri);
+    if (redirectUrl.protocol !== "https:" && redirectUrl.protocol !== "http:") {
+      return new Response(renderPage({ ...p, error: "Invalid redirect_uri." }), {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    }
   } catch {
     return new Response(renderPage({ ...p, error: "Invalid redirect_uri." }), {
       headers: { "content-type": "text/html; charset=utf-8" },
@@ -180,11 +159,15 @@ export async function POST(req: NextRequest) {
 
   const code = randomUUID();
   const expiry = Date.now() + 10 * 60 * 1000;
-  getCodes().set(code, {
-    challenge: p.code_challenge,
-    method: p.code_challenge_method,
+  const stored: { expiry: number; challenge?: string; method?: string } = {
     expiry,
-  });
+  };
+  if (p.code_challenge && p.code_challenge_method) {
+    stored.challenge = p.code_challenge;
+    stored.method = p.code_challenge_method;
+  }
+
+  getCodes().set(code, stored);
 
   redirectUrl.searchParams.set("code", code);
   redirectUrl.searchParams.set("state", p.state);

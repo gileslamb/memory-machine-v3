@@ -5,7 +5,7 @@ declare global {
   var __mmOAuthCodes:
     | Map<
         string,
-        { challenge: string; method: string; expiry: number }
+        { expiry: number; challenge?: string; method?: string }
       >
     | undefined;
 }
@@ -65,11 +65,11 @@ export async function POST(req: NextRequest) {
   if (grant_type !== "authorization_code") {
     return oauthError(400, "unsupported_grant_type", "grant_type must be authorization_code");
   }
-  if (!code || !redirect_uri || !client_id || !code_verifier) {
+  if (!code || !redirect_uri || !client_id) {
     return oauthError(
       400,
       "invalid_request",
-      "code, redirect_uri, client_id, and code_verifier are required"
+      "code, redirect_uri, and client_id are required"
     );
   }
 
@@ -83,15 +83,27 @@ export async function POST(req: NextRequest) {
   if (!entry || Date.now() > entry.expiry) {
     return oauthError(400, "invalid_grant", "Invalid or expired authorization code");
   }
-  if (entry.method !== "S256") {
-    return oauthError(400, "invalid_grant", "Unsupported code challenge method");
-  }
 
-  const computed = pkceS256Challenge(code_verifier);
-  const a = Buffer.from(computed, "utf8");
-  const b = Buffer.from(entry.challenge, "utf8");
-  if (a.length !== b.length || !timingSafeEqual(a, b)) {
-    return oauthError(400, "invalid_grant", "PKCE verification failed");
+  const hasPkce =
+    entry.challenge != null &&
+    entry.challenge.length > 0 &&
+    entry.method != null &&
+    entry.method.length > 0;
+
+  if (hasPkce) {
+    const challenge = entry.challenge as string;
+    if (!code_verifier) {
+      return oauthError(400, "invalid_request", "code_verifier is required for this authorization code");
+    }
+    if (entry.method !== "S256") {
+      return oauthError(400, "invalid_grant", "Unsupported code challenge method");
+    }
+    const computed = pkceS256Challenge(code_verifier);
+    const a = Buffer.from(computed, "utf8");
+    const b = Buffer.from(challenge, "utf8");
+    if (a.length !== b.length || !timingSafeEqual(a, b)) {
+      return oauthError(400, "invalid_grant", "PKCE verification failed");
+    }
   }
 
   codes.delete(code);
