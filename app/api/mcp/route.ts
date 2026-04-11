@@ -182,15 +182,10 @@ export async function GET(req: NextRequest) {
 /**
  * Stateless HTTP MCP: single POST, JSON-RPC in → JSON-RPC out (no SSE, no sessions).
  *
- * Auth (via isAuthorized): Authorization: Bearer matches MEMORY_MACHINE_PASSWORD or
- * MEMORY_MACHINE_API_KEY (OAuth access_token from /api/oauth/token is the API key),
- * or x-memory-machine-api-key / x-api-key headers.
+ * `initialize` and `ping` work without credentials (handshake). All other methods require
+ * isAuthorized(): Bearer (password or API key), x-memory-machine-api-key, or x-api-key.
  */
 export async function POST(req: NextRequest) {
-  if (!isAuthorized(req)) {
-    return mcpUnauthorizedResponse();
-  }
-
   let body: JsonRpcReq;
   try {
     body = (await req.json()) as JsonRpcReq;
@@ -199,6 +194,11 @@ export async function POST(req: NextRequest) {
   }
 
   const { id, method, params } = body;
+
+  const allowUnauthenticated = method === "initialize" || method === "ping";
+  if (!allowUnauthenticated && !isAuthorized(req)) {
+    return mcpUnauthorizedResponse();
+  }
 
   if (method?.startsWith("notifications/")) {
     return new Response(null, { status: 200 });
