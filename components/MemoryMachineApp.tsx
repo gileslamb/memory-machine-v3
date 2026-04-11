@@ -30,6 +30,7 @@ type Project = {
   current_state: string | null;
   budget: string | null;
   status_v2: string | null;
+  miro_url?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -49,6 +50,7 @@ type LogRow = {
   content: string;
   project_id: string | null;
   created_at: string;
+  projects?: { id: string; name: string }[];
 };
 
 type TimesheetRow = {
@@ -104,6 +106,12 @@ function firstTwoLines(text: string): string {
   return lines.slice(0, 2).join("\n");
 }
 
+function miroHref(raw: string): string {
+  const t = raw.trim();
+  if (!t) return "";
+  return /^https?:\/\//i.test(t) ? t : `https://${t}`;
+}
+
 const STATUS_V2_META: Record<string, { label: string; color: string }> = {
   pending: { label: "Pending", color: "#888888" },
   "in-dev": { label: "In dev", color: "#3a7bd5" },
@@ -147,11 +155,62 @@ function ProjectCard({
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [budgetEditing, setBudgetEditing] = useState(false);
   const [budgetDraft, setBudgetDraft] = useState(project.budget ?? "");
+  const [nameEditing, setNameEditing] = useState(false);
+  const [nameDraft, setNameDraft] = useState(project.name);
+  const [descEditing, setDescEditing] = useState(false);
+  const [descDraft, setDescDraft] = useState(project.description ?? "");
+  const [stateEditing, setStateEditing] = useState(false);
+  const [stateDraft, setStateDraft] = useState(project.current_state ?? "");
+  const [miroEditing, setMiroEditing] = useState(false);
+  const [miroDraft, setMiroDraft] = useState(project.miro_url ?? "");
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">(
+    "idle"
+  );
+  const saveClearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const statusMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setBudgetDraft(project.budget ?? "");
   }, [project.budget]);
+
+  useEffect(() => {
+    if (!nameEditing) setNameDraft(project.name);
+  }, [project.name, nameEditing]);
+
+  useEffect(() => {
+    if (!descEditing) setDescDraft(project.description ?? "");
+  }, [project.description, descEditing]);
+
+  useEffect(() => {
+    if (!stateEditing) setStateDraft(project.current_state ?? "");
+  }, [project.current_state, stateEditing]);
+
+  useEffect(() => {
+    if (!miroEditing) setMiroDraft(project.miro_url ?? "");
+  }, [project.miro_url, miroEditing]);
+
+  function bumpSaveStatus() {
+    setSaveStatus("saved");
+    if (saveClearTimer.current) clearTimeout(saveClearTimer.current);
+    saveClearTimer.current = setTimeout(() => setSaveStatus("idle"), 1600);
+  }
+
+  async function patchProject(partial: Record<string, unknown>) {
+    setSaveStatus("saving");
+    const res = await fetch(`/api/projects/${project.id}`, {
+      method: "PATCH",
+      headers: { ...authHeaders(token), "content-type": "application/json" },
+      body: JSON.stringify(partial),
+    });
+    if (!res.ok) {
+      setSaveStatus("idle");
+      alert(await parseError(res));
+      return false;
+    }
+    bumpSaveStatus();
+    await onRefreshProjects();
+    return true;
+  }
 
   const loadProjectData = useCallback(async () => {
     if (!token) return;
@@ -195,33 +254,52 @@ function ProjectCard({
 
   async function patchStatusV2(v: string) {
     setStatusMenuOpen(false);
-    const res = await fetch(`/api/projects/${project.id}`, {
-      method: "PATCH",
-      headers: { ...authHeaders(token), "content-type": "application/json" },
-      body: JSON.stringify({ status_v2: v }),
-    });
-    if (!res.ok) {
-      alert(await parseError(res));
-      return;
-    }
-    await onRefreshProjects();
+    await patchProject({ status_v2: v });
   }
 
   async function saveBudget() {
     setBudgetEditing(false);
     const next = budgetDraft.trim();
     const payload = next === "" ? { budget: null } : { budget: next };
-    const res = await fetch(`/api/projects/${project.id}`, {
-      method: "PATCH",
-      headers: { ...authHeaders(token), "content-type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) {
-      alert(await parseError(res));
-      setBudgetDraft(project.budget ?? "");
+    const ok = await patchProject(payload);
+    if (!ok) setBudgetDraft(project.budget ?? "");
+  }
+
+  async function saveName() {
+    setNameEditing(false);
+    const next = nameDraft.trim();
+    if (!next) {
+      alert("Name cannot be empty.");
+      setNameDraft(project.name);
       return;
     }
-    await onRefreshProjects();
+    const ok = await patchProject({ name: next });
+    if (!ok) setNameDraft(project.name);
+  }
+
+  async function saveDescription() {
+    setDescEditing(false);
+    const ok = await patchProject({
+      description: descDraft.trim() === "" ? null : descDraft,
+    });
+    if (!ok) setDescDraft(project.description ?? "");
+  }
+
+  async function saveState() {
+    setStateEditing(false);
+    const ok = await patchProject({
+      current_state: stateDraft.trim() === "" ? null : stateDraft,
+    });
+    if (!ok) setStateDraft(project.current_state ?? "");
+  }
+
+  async function saveMiro() {
+    setMiroEditing(false);
+    const t = miroDraft.trim();
+    const ok = await patchProject({
+      miro_url: t === "" ? null : t,
+    });
+    if (!ok) setMiroDraft(project.miro_url ?? "");
   }
 
   async function completeTask(taskId: string) {
@@ -250,15 +328,19 @@ function ProjectCard({
         style={{
           display: "flex",
           flexWrap: "wrap",
-          alignItems: "flex-start",
+          alignItems: "center",
           justifyContent: "space-between",
           gap: 12,
-          marginBottom: 16,
+          marginBottom: 12,
         }}
       >
-        <div style={{ fontWeight: 700, fontSize: 18, flex: "1 1 200px" }}>
-          {project.name}
-        </div>
+        <span style={{ fontSize: 13, color: MUTED, minHeight: 20 }}>
+          {saveStatus === "saving" ?
+            "Saving…"
+          : saveStatus === "saved" ?
+            "Saved"
+          : "\u00a0"}
+        </span>
         <div ref={statusMenuRef} style={{ position: "relative" }}>
           <button
             type="button"
@@ -334,6 +416,265 @@ function ProjectCard({
       </div>
 
       <div style={{ marginBottom: 16 }}>
+        {nameEditing ? (
+          <input
+            value={nameDraft}
+            onChange={(e) => setNameDraft(e.target.value)}
+            onBlur={() => void saveName()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+              if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+                e.preventDefault();
+                void saveName();
+              }
+            }}
+            autoFocus
+            aria-label="Project name"
+            style={{
+              fontWeight: 700,
+              fontSize: 18,
+              width: "100%",
+              minHeight: 44,
+              padding: "8px 10px",
+              border: `1px solid ${BORDER}`,
+              borderRadius: 8,
+            }}
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => setNameEditing(true)}
+            style={{
+              fontWeight: 700,
+              fontSize: 18,
+              border: "none",
+              background: "transparent",
+              padding: "4px 0",
+              cursor: "pointer",
+              textAlign: "left",
+              color: TEXT,
+              width: "100%",
+            }}
+          >
+            {project.name}
+          </button>
+        )}
+      </div>
+
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontWeight: 600, marginBottom: 6 }}>Description</div>
+        {descEditing ? (
+          <textarea
+            value={descDraft}
+            onChange={(e) => setDescDraft(e.target.value)}
+            onBlur={() => void saveDescription()}
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+                e.preventDefault();
+                void saveDescription();
+              }
+            }}
+            rows={4}
+            autoFocus
+            aria-label="Description"
+            style={{
+              width: "100%",
+              padding: 12,
+              border: `1px solid ${BORDER}`,
+              borderRadius: 8,
+              fontSize: 16,
+              resize: "vertical",
+            }}
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => setDescEditing(true)}
+            style={{
+              whiteSpace: "pre-wrap",
+              border: "none",
+              background: "transparent",
+              padding: "4px 0",
+              cursor: "pointer",
+              textAlign: "left",
+              color: project.description?.trim() ? TEXT : MUTED,
+              fontStyle: project.description?.trim() ? "normal" : "italic",
+              width: "100%",
+              fontSize: 16,
+              lineHeight: 1.6,
+            }}
+          >
+            {project.description?.trim() ? project.description : "Add description"}
+          </button>
+        )}
+      </div>
+
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontWeight: 600, marginBottom: 6 }}>Miro</div>
+        {miroEditing ? (
+          <input
+            value={miroDraft}
+            onChange={(e) => setMiroDraft(e.target.value)}
+            onBlur={() => void saveMiro()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+              if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+                e.preventDefault();
+                void saveMiro();
+              }
+            }}
+            placeholder="https://…"
+            autoFocus
+            aria-label="Miro URL"
+            style={{
+              width: "100%",
+              minHeight: 44,
+              padding: "8px 10px",
+              border: `1px solid ${BORDER}`,
+              borderRadius: 8,
+              fontSize: 16,
+            }}
+          />
+        ) : (
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
+            {project.miro_url?.trim() ?
+              <>
+                <a
+                  href={miroHref(project.miro_url)}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ color: ACCENT, fontWeight: 600, wordBreak: "break-all" }}
+                >
+                  {project.miro_url.trim()}
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setMiroEditing(true)}
+                  style={{
+                    border: `1px solid ${BORDER}`,
+                    borderRadius: 8,
+                    background: "#fff",
+                    padding: "6px 12px",
+                    cursor: "pointer",
+                    fontSize: 14,
+                  }}
+                >
+                  Edit
+                </button>
+              </>
+            : (
+              <button
+                type="button"
+                onClick={() => setMiroEditing(true)}
+                style={{
+                  border: "none",
+                  background: "transparent",
+                  padding: "4px 0",
+                  cursor: "pointer",
+                  color: MUTED,
+                  fontStyle: "italic",
+                  fontSize: 16,
+                }}
+              >
+                Add Miro URL
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>Current state</div>
+        {stateEditing ? (
+          <textarea
+            value={stateDraft}
+            onChange={(e) => setStateDraft(e.target.value)}
+            onBlur={() => void saveState()}
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+                e.preventDefault();
+                void saveState();
+              }
+            }}
+            rows={10}
+            autoFocus
+            aria-label="Current state"
+            style={{
+              width: "100%",
+              padding: 12,
+              border: `1px solid ${BORDER}`,
+              borderRadius: 8,
+              fontSize: 15,
+              lineHeight: 1.6,
+              resize: "vertical",
+            }}
+          />
+        ) : stateText ?
+          <>
+            <button
+              type="button"
+              onClick={() => setStateEditing(true)}
+              style={{
+                whiteSpace: "pre-wrap",
+                border: "none",
+                background: "transparent",
+                padding: 0,
+                cursor: "pointer",
+                textAlign: "left",
+                color: TEXT,
+                width: "100%",
+                fontSize: 15,
+                ...(stateExpanded ?
+                  {}
+                : {
+                    display: "-webkit-box",
+                    WebkitLineClamp: 3,
+                    WebkitBoxOrient: "vertical" as const,
+                    overflow: "hidden",
+                  }),
+              }}
+            >
+              {stateText}
+            </button>
+            <button
+              type="button"
+              onClick={() => setStateExpanded((e) => !e)}
+              style={{
+                marginTop: 8,
+                minHeight: 44,
+                padding: "8px 0",
+                border: "none",
+                background: "transparent",
+                color: ACCENT,
+                fontWeight: 600,
+                cursor: "pointer",
+                fontSize: 15,
+              }}
+            >
+              {stateExpanded ? "Show less" : "Show more"}
+            </button>
+          </>
+        : (
+          <button
+            type="button"
+            onClick={() => setStateEditing(true)}
+            style={{
+              margin: 0,
+              border: "none",
+              background: "transparent",
+              padding: "4px 0",
+              cursor: "pointer",
+              color: MUTED,
+              fontStyle: "italic",
+              fontSize: 16,
+            }}
+          >
+            No state yet — click to add
+          </button>
+        )}
+      </div>
+
+      <div style={{ marginBottom: 16 }}>
         <div style={{ marginBottom: 10 }}>
           <span style={{ fontWeight: 600, marginRight: 8 }}>Budget:</span>
           {budgetEditing ? (
@@ -343,6 +684,10 @@ function ProjectCard({
               onBlur={() => void saveBudget()}
               onKeyDown={(e) => {
                 if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+                  e.preventDefault();
+                  void saveBudget();
+                }
               }}
               autoFocus
               aria-label="Budget"
@@ -377,50 +722,6 @@ function ProjectCard({
           )}
         </div>
         <div style={{ color: MUTED }}>{hoursStr}</div>
-      </div>
-
-      <div style={{ marginBottom: 16 }}>
-        <div style={{ fontWeight: 600, marginBottom: 8 }}>Current state</div>
-        {stateText ? (
-          <>
-            <div
-              style={{
-                whiteSpace: "pre-wrap",
-                ...(stateExpanded
-                  ? {}
-                  : {
-                      display: "-webkit-box",
-                      WebkitLineClamp: 3,
-                      WebkitBoxOrient: "vertical" as const,
-                      overflow: "hidden",
-                    }),
-              }}
-            >
-              {stateText}
-            </div>
-            <button
-              type="button"
-              onClick={() => setStateExpanded((e) => !e)}
-              style={{
-                marginTop: 8,
-                minHeight: 44,
-                padding: "8px 0",
-                border: "none",
-                background: "transparent",
-                color: ACCENT,
-                fontWeight: 600,
-                cursor: "pointer",
-                fontSize: 15,
-              }}
-            >
-              {stateExpanded ? "Show less" : "Show more"}
-            </button>
-          </>
-        ) : (
-          <p style={{ margin: 0, color: MUTED, fontStyle: "italic" }}>
-            No state yet
-          </p>
-        )}
       </div>
 
       <div style={{ marginBottom: 16 }}>
@@ -620,8 +921,12 @@ export default function MemoryMachineApp() {
   const [stableSavedAt, setStableSavedAt] = useState<string | null>(null);
 
   const [logText, setLogText] = useState("");
-  const [logProjectId, setLogProjectId] = useState("");
+  const [logProjectIds, setLogProjectIds] = useState<string[]>([]);
   const [logBusy, setLogBusy] = useState(false);
+  const [editLogId, setEditLogId] = useState<string | null>(null);
+  const [editLogContent, setEditLogContent] = useState("");
+  const [editLogProjectIds, setEditLogProjectIds] = useState<string[]>([]);
+  const [editLogBusy, setEditLogBusy] = useState(false);
 
   const [newProjectName, setNewProjectName] = useState("");
   const [newProjectDesc, setNewProjectDesc] = useState("");
@@ -730,7 +1035,7 @@ export default function MemoryMachineApp() {
         headers: { ...authHeaders(token), "content-type": "application/json" },
         body: JSON.stringify({
           content: logText.trim(),
-          project_id: logProjectId || undefined,
+          project_ids: logProjectIds.length > 0 ? logProjectIds : undefined,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -744,6 +1049,7 @@ export default function MemoryMachineApp() {
         alert(`Log saved. Claude could not update project state: ${data.claude_error}`);
       }
       setLogText("");
+      setLogProjectIds([]);
       refreshLogs();
       refreshProjects();
     } finally {
@@ -762,7 +1068,48 @@ export default function MemoryMachineApp() {
       alert(await parseError(res));
       return;
     }
+    if (editLogId === id) setEditLogId(null);
     refreshLogs();
+  }
+
+  function beginEditLog(row: LogRow) {
+    setEditLogId(row.id);
+    setEditLogContent(row.content);
+    setEditLogProjectIds(
+      logAssignments(row).map((p) => p.id)
+    );
+  }
+
+  async function saveEditLog() {
+    if (!token || !editLogId) return;
+    const body = editLogContent.trim();
+    if (!body) {
+      alert("Content cannot be empty.");
+      return;
+    }
+    setEditLogBusy(true);
+    try {
+      const res = await fetch(`/api/logs/${editLogId}`, {
+        method: "PATCH",
+        headers: { ...authHeaders(token), "content-type": "application/json" },
+        body: JSON.stringify({
+          content: body,
+          project_ids: editLogProjectIds,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(
+          typeof data.error === "string" ? data.error : res.statusText || "Request failed"
+        );
+        return;
+      }
+      setEditLogId(null);
+      refreshLogs();
+      refreshProjects();
+    } finally {
+      setEditLogBusy(false);
+    }
   }
 
   function toggleLogExpand(id: string) {
@@ -808,6 +1155,31 @@ export default function MemoryMachineApp() {
     for (const p of projects) m.set(p.id, p.name);
     return m;
   }, [projects]);
+
+  function logAssignments(row: LogRow): { id: string; name: string }[] {
+    if (row.projects?.length) return row.projects;
+    if (row.project_id) {
+      return [
+        {
+          id: row.project_id,
+          name: projectNameById.get(row.project_id) ?? row.project_id,
+        },
+      ];
+    }
+    return [];
+  }
+
+  function toggleLogProject(pid: string) {
+    setLogProjectIds((prev) =>
+      prev.includes(pid) ? prev.filter((x) => x !== pid) : [...prev, pid]
+    );
+  }
+
+  function toggleEditLogProject(pid: string) {
+    setEditLogProjectIds((prev) =>
+      prev.includes(pid) ? prev.filter((x) => x !== pid) : [...prev, pid]
+    );
+  }
 
   async function createProject(e: React.FormEvent) {
     e.preventDefault();
@@ -1180,29 +1552,45 @@ export default function MemoryMachineApp() {
                   minHeight: 160,
                 }}
               />
-              <label htmlFor="log-proj" style={{ fontWeight: 600, display: "block", marginBottom: 8 }}>
-                Project (optional — enables state update via Claude)
-              </label>
-              <select
-                id="log-proj"
-                value={logProjectId}
-                onChange={(e) => setLogProjectId(e.target.value)}
+              <span style={{ fontWeight: 600, display: "block", marginBottom: 8 }}>
+                Projects (optional — first selected gets Claude state update)
+              </span>
+              <div
                 style={{
-                  width: "100%",
-                  padding: "14px 12px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 8,
+                  marginBottom: 16,
+                  padding: "12px 14px",
                   border: `1px solid ${BORDER}`,
                   borderRadius: 8,
-                  marginBottom: 16,
-                  minHeight: 48,
+                  background: "#fafaf8",
                 }}
               >
-                <option value="">No project</option>
-                {activeProjects.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
+                {activeProjects.length === 0 ?
+                  <span style={{ color: MUTED, fontSize: 15 }}>No active projects.</span>
+                : activeProjects.map((p) => (
+                    <label
+                      key={p.id}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                        cursor: "pointer",
+                        minHeight: 40,
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={logProjectIds.includes(p.id)}
+                        onChange={() => toggleLogProject(p.id)}
+                        style={{ width: 20, height: 20 }}
+                      />
+                      <span>{p.name}</span>
+                    </label>
+                  ))
+                }
+              </div>
               <button
                 type="submit"
                 disabled={logBusy}
@@ -1236,6 +1624,108 @@ export default function MemoryMachineApp() {
                 <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                   {rows.map((row) => {
                     const expanded = expandedLogIds.has(row.id);
+                    const assigns = logAssignments(row);
+                    if (editLogId === row.id) {
+                      return (
+                        <div key={row.id} style={card}>
+                          <div
+                            style={{
+                              fontSize: "0.9rem",
+                              color: MUTED,
+                              marginBottom: 10,
+                            }}
+                          >
+                            {new Date(row.created_at).toLocaleString()}
+                          </div>
+                          <textarea
+                            value={editLogContent}
+                            onChange={(e) => setEditLogContent(e.target.value)}
+                            onKeyDown={(e) => {
+                              if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+                                e.preventDefault();
+                                void saveEditLog();
+                              }
+                            }}
+                            rows={10}
+                            style={{
+                              width: "100%",
+                              padding: 12,
+                              border: `1px solid ${BORDER}`,
+                              borderRadius: 8,
+                              marginBottom: 12,
+                              fontSize: 16,
+                              resize: "vertical",
+                            }}
+                          />
+                          <div style={{ fontWeight: 600, marginBottom: 8 }}>Projects</div>
+                          <div
+                            style={{
+                              display: "flex",
+                              flexDirection: "column",
+                              gap: 8,
+                              marginBottom: 12,
+                              padding: "12px 14px",
+                              border: `1px solid ${BORDER}`,
+                              borderRadius: 8,
+                              background: "#fafaf8",
+                            }}
+                          >
+                            {activeProjects.map((p) => (
+                              <label
+                                key={p.id}
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 10,
+                                  cursor: "pointer",
+                                  minHeight: 40,
+                                }}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={editLogProjectIds.includes(p.id)}
+                                  onChange={() => toggleEditLogProject(p.id)}
+                                  style={{ width: 20, height: 20 }}
+                                />
+                                <span>{p.name}</span>
+                              </label>
+                            ))}
+                          </div>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                            <button
+                              type="button"
+                              disabled={editLogBusy}
+                              onClick={() => void saveEditLog()}
+                              style={{
+                                minHeight: 44,
+                                padding: "8px 16px",
+                                background: ACCENT,
+                                color: "#fff",
+                                border: "none",
+                                borderRadius: 8,
+                                fontWeight: 600,
+                              }}
+                            >
+                              {editLogBusy ? "Saving…" : "Save"}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={editLogBusy}
+                              onClick={() => setEditLogId(null)}
+                              style={{
+                                minHeight: 44,
+                                padding: "8px 16px",
+                                border: `1px solid ${BORDER}`,
+                                borderRadius: 8,
+                                background: "#fff",
+                              }}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    }
                     return (
                       <div key={row.id} style={card}>
                         <div
@@ -1247,15 +1737,24 @@ export default function MemoryMachineApp() {
                             marginBottom: 8,
                           }}
                         >
-                          <span style={{ color: MUTED, fontSize: "0.9rem" }}>
+                          <span
+                            style={{
+                              color: MUTED,
+                              fontSize: "0.9rem",
+                              display: "flex",
+                              flexWrap: "wrap",
+                              alignItems: "center",
+                              gap: 6,
+                            }}
+                          >
                             {new Date(row.created_at).toLocaleTimeString(undefined, {
                               hour: "2-digit",
                               minute: "2-digit",
                             })}
-                            {row.project_id ? (
+                            {assigns.map((a) => (
                               <span
+                                key={a.id}
                                 style={{
-                                  marginLeft: 8,
                                   padding: "2px 8px",
                                   background: "#eef5f1",
                                   color: ACCENT,
@@ -1263,11 +1762,24 @@ export default function MemoryMachineApp() {
                                   fontWeight: 600,
                                 }}
                               >
-                                {projectNameById.get(row.project_id) ?? row.project_id}
+                                {a.name}
                               </span>
-                            ) : null}
+                            ))}
                           </span>
-                          <div style={{ display: "flex", gap: 8 }}>
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                            <button
+                              type="button"
+                              onClick={() => beginEditLog(row)}
+                              style={{
+                                minHeight: 44,
+                                padding: "8px 12px",
+                                border: `1px solid ${BORDER}`,
+                                borderRadius: 8,
+                                background: "#fff",
+                              }}
+                            >
+                              Edit
+                            </button>
                             <button
                               type="button"
                               onClick={() => toggleLogExpand(row.id)}
@@ -1711,8 +2223,13 @@ export default function MemoryMachineApp() {
                 <code>Authorization: Bearer &lt;your API key&gt;</code> or the header{" "}
                 <code>x-memory-machine-api-key: &lt;your API key&gt;</code> on{" "}
                 <code>POST /api/logs</code> with JSON body{" "}
-                <code>{`{ "content": "...", "project_id": "optional-uuid" }`}</code>
-                . The same key works for other write endpoints if you automate them; the browser uses
+                <code>{`{ "content": "...", "project_id": "optional-uuid", "project_ids": ["optional-uuids"] }`}</code>
+                (junction multi-assign; first id drives Claude state).{" "}
+                <code>PATCH /api/logs/:id</code> accepts{" "}
+                <code>{`{ "content": "...", "project_ids": [] }`}</code>.{" "}
+                <strong>MCP (Claude):</strong> <code>GET /api/mcp</code> with Bearer auth opens an SSE
+                stream; use the URL from the first <code>endpoint</code> event to POST JSON-RPC
+                (<code>initialize</code>, <code>tools/list</code>, <code>tools/call</code>). The same key works for other write endpoints if you automate them; the browser uses
                 your password after unlock.
               </p>
             </div>

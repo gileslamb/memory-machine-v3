@@ -25,10 +25,11 @@ export async function PATCH(req: NextRequest, context: Params) {
       status?: string;
       budget?: string | null;
       status_v2?: string;
+      miro_url?: string | null;
     };
     const sql = getSql();
     const existing = await sql`
-      SELECT id, name, description, status, current_state, budget, status_v2, created_at, updated_at
+      SELECT id, name, description, status, current_state, budget, status_v2, miro_url, created_at, updated_at
       FROM projects WHERE id = ${id}
     `;
     if (!existing.length) {
@@ -41,6 +42,7 @@ export async function PATCH(req: NextRequest, context: Params) {
       current_state: string | null;
       budget: string | null;
       status_v2: string | null;
+      miro_url: string | null;
     };
 
     if (body.status !== undefined && !["active", "archived"].includes(body.status)) {
@@ -64,6 +66,12 @@ export async function PATCH(req: NextRequest, context: Params) {
         : cur.budget;
     const status_v2 =
       body.status_v2 !== undefined ? body.status_v2 : cur.status_v2;
+    const miro_url =
+      body.miro_url !== undefined
+        ? body.miro_url === null || body.miro_url === ""
+          ? null
+          : body.miro_url.trim()
+        : cur.miro_url;
 
     const [row] = await sql`
       UPDATE projects
@@ -74,9 +82,10 @@ export async function PATCH(req: NextRequest, context: Params) {
         status = ${status},
         budget = ${budget},
         status_v2 = ${status_v2},
+        miro_url = ${miro_url},
         updated_at = NOW()
       WHERE id = ${id}
-      RETURNING id, name, description, status, current_state, budget, status_v2, created_at, updated_at
+      RETURNING id, name, description, status, current_state, budget, status_v2, miro_url, created_at, updated_at
     `;
     return Response.json(row);
   } catch (e) {

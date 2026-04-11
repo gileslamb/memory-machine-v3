@@ -1,8 +1,8 @@
 import { NextRequest } from "next/server";
 import { getSql } from "@/lib/db";
 import { isAuthorized, unauthorizedResponse } from "@/lib/auth";
-import { newId } from "@/lib/ids";
-import { extractProjectState } from "@/lib/claude";
+import { fetchLogsWithProjects } from "@/lib/logsWithProjects";
+import { insertLogEntry } from "@/lib/logMutations";
 
 export async function GET(req: NextRequest) {
   if (!isAuthorized(req)) {
@@ -11,18 +11,14 @@ export async function GET(req: NextRequest) {
   try {
     const projectId = req.nextUrl.searchParams.get("project_id");
     const sql = getSql();
+    const all = await fetchLogsWithProjects(sql);
     const rows = projectId
-      ? await sql`
-          SELECT id, content, project_id, created_at
-          FROM logs
-          WHERE project_id = ${projectId}
-          ORDER BY created_at DESC
-        `
-      : await sql`
-          SELECT id, content, project_id, created_at
-          FROM logs
-          ORDER BY created_at DESC
-        `;
+      ? all.filter(
+          (l) =>
+            l.project_id === projectId ||
+            l.projects.some((p) => p.id === projectId)
+        )
+      : all;
     return Response.json(rows);
   } catch (e) {
     const message = e instanceof Error ? e.message : "Failed to load logs";
@@ -35,91 +31,34 @@ export async function POST(req: NextRequest) {
     return unauthorizedResponse();
   }
   try {
-    const body = (await req.json()) as { content?: string; project_id?: string };
+    const body = (await req.json()) as {
+      content?: string;
+      project_id?: string;
+      project_ids?: string[];
+    };
     const content = body.content?.trim();
     if (!content) {
       return Response.json({ error: "content is required" }, { status: 400 });
     }
-    const project_id = body.project_id?.trim() || null;
-    const sql = getSql();
-    const id = newId();
-
-    let projectRow: { name: string; current_state: string | null } | null = null;
-    if (project_id) {
-      const proj = await sql`
-        SELECT name, current_state FROM projects WHERE id = ${project_id}
-      `;
-      if (!proj.length) {
-        return Response.json({ error: "project not found" }, { status: 400 });
-      }
-      projectRow = proj[0] as { name: string; current_state: string | null };
+    const rawIds =
+      body.project_ids?.map((x) => String(x).trim()).filter(Boolean) ?? [];
+    if (rawIds.length === 0 && body.project_id?.trim()) {
+      rawIds.push(body.project_id.trim());
     }
 
-    const [log] = await sql`
-      INSERT INTO logs (id, content, project_id)
-      VALUES (${id}, ${content}, ${project_id})
-      RETURNING id, content, project_id, created_at
-    `;
-
-    if (project_id && projectRow) {
-      const p = projectRow;
-      try {
-        const extracted = await extractProjectState({
-          projectName: p.name,
-          currentState: p.current_state,
-          logContent: content,
-        });
-        try {
-          await sql`
-            UPDATE projects
-            SET current_state = ${extracted.state}, updated_at = NOW()
-            WHERE id = ${project_id}
-          `;
-        } catch {
-          /* silent */
-        }
-        try {
-          if (extracted.status != null) {
-            await sql`
-              UPDATE projects
-              SET status_v2 = ${extracted.status}, updated_at = NOW()
-              WHERE id = ${project_id}
-            `;
-          }
-        } catch {
-          /* silent */
-        }
-        try {
-          if (extracted.budget != null && extracted.budget !== "") {
-            await sql`
-              UPDATE projects
-              SET budget = ${extracted.budget}, updated_at = NOW()
-              WHERE id = ${project_id}
-            `;
-          }
-        } catch {
-          /* silent */
-        }
-        for (const taskTitle of extracted.tasks) {
-          const t = taskTitle.trim();
-          if (!t) continue;
-          try {
-            const tid = newId();
-            await sql`
-              INSERT INTO tasks (id, project_id, title, status)
-              VALUES (${tid}, ${project_id}, ${t}, 'open')
-            `;
-          } catch {
-            /* silent */
-          }
-        }
-      } catch (err) {
-        const claude_error = err instanceof Error ? err.message : "Claude failed";
+    try {
+      const { log, claude_error } = await insertLogEntry(content, rawIds);
+      if (claude_error) {
         return Response.json({ ...log, claude_error });
       }
+      return Response.json(log);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to create log";
+      if (msg.startsWith("project not found")) {
+        return Response.json({ error: msg }, { status: 400 });
+      }
+      throw err;
     }
-
-    return Response.json(log);
   } catch (e) {
     const message = e instanceof Error ? e.message : "Failed to create log";
     return Response.json({ error: message }, { status: 500 });

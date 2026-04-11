@@ -70,6 +70,27 @@ export async function POST(req: NextRequest) {
       ALTER TABLE projects
       ADD COLUMN IF NOT EXISTS status_v2 TEXT DEFAULT 'pending'
     `;
+    await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS miro_url TEXT`;
+
+    await sql`
+      CREATE TABLE IF NOT EXISTS log_projects (
+        id TEXT PRIMARY KEY,
+        log_id TEXT NOT NULL REFERENCES logs(id) ON DELETE CASCADE,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        UNIQUE (log_id, project_id)
+      )
+    `;
+
+    await sql`
+      INSERT INTO log_projects (id, log_id, project_id)
+      SELECT 'lp-' || l.id || '-' || l.project_id, l.id, l.project_id
+      FROM logs l
+      WHERE l.project_id IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM log_projects lp
+          WHERE lp.log_id = l.id AND lp.project_id = l.project_id
+        )
+    `;
 
     await sql`
       CREATE TABLE IF NOT EXISTS tasks (
